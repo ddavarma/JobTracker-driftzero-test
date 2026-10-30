@@ -5,10 +5,8 @@ import logging
 import requests
 from datetime import datetime
 from abc import ABC, abstractmethod
+from openai import OpenAI
 from .config import OPENAI_API_KEY, FUNCTION, MODEL, PRICE, LLAMA_URL, LLAMA_MODEL, THRESHOLD, FIX_ANSWER
-
-# Set the API key for OpenAI once, assuming this is a module-level operation
-openai.api_key = OPENAI_API_KEY
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -108,15 +106,19 @@ class Llama(ChatBot):
 class ChatGPT(ChatBot):
     """Concrete implementation of a ChatBot using OpenAI's GPT."""
 
-    def __init__(self) -> None:
+    def __init__(self, client=None) -> None:
         super().__init__()
+        # Explicit v1 client instantiation instead of global module state.
+        self.client = client if client is not None else OpenAI(api_key=OPENAI_API_KEY)
         self.models = set()
         try:
-            for i in list(openai.Model.list().values())[1]:
-                name = i["id"]
+            # list() responses are auto-iterable in v1 and items are
+            # pydantic models, so use attribute access.
+            for model in self.client.models.list():
+                name = model.id
                 if "gpt" in name:
                     self.models.add(name)
-        except openai.error.OpenAIError as e:
+        except openai.OpenAIError as e:
             logger.error(f'Failed to fetch model list: {e}')
 
     def get_cost(self, mails):
@@ -137,19 +139,19 @@ class ChatGPT(ChatBot):
         """Get content from the chatbot based on the provided information."""
         prompt = self.gen_prompt(info['body'])
         try:
-            completion = openai.ChatCompletion.create(
+            completion = self.client.chat.completions.create(
                 model=MODEL,
                 messages=[{'role': 'user', 'content': prompt}],
                 functions=FUNCTION,
                 function_call='auto'
             )
-        except openai.error.OpenAIError as e:
+        except openai.OpenAIError as e:
             return ('Failed', f'OpenAI API error: {str(e)}')
         except json.JSONDecodeError:
             return ('Failed', 'Failed to decode JSON from function call')
         else:
             if completion.choices[0].finish_reason == 'function_call':
-                res = completion.choices[0].message['function_call']['arguments']
+                res = completion.choices[0].message.function_call.arguments
                 res = json.loads(res)
                 try:
                     info['company'] = res['company']
